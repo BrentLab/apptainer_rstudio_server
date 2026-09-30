@@ -1,68 +1,98 @@
-# Purpose
+# Run RStudio Server on the HTCF with Apptainer
 
-There can be some difficulty in running rstudio server on the HTCF -- one has to do with the compiled software paths that R relies on, another with controlling where R puts downloaded packages. Using a container addresses these issues.  
+RStudio Server on the HTCF needs two things sorted out: the compiled software
+R relies on, and where R puts installed packages. A container handles the
+first. A persistent library directory, bound in from the cluster filesystem,
+handles the second: packages you install in one session are still there the
+next time.
 
-The container is configured so that you can mount a path into the container where any packages installed during an interactive session are saved. If you mount the same path from session to session, then you have a persistent software library. It also comes with most commonly used R software from CRAN and bioconductor pre-installed.
+There is no Dockerfile in this repo. Build the base image with
+[Seqera Containers](https://seqera.io/containers/) (or use any image you
+like) and point the sbatch script at the resulting `.sif`.
 
-# Cite
+## Image requirements
 
-This is an exact copy of David Tang's post here:
+The image must contain **R and `rserver`** (RStudio Server). Check before you
+submit anything:
 
-https://davetang.org/muse/2021/04/24/running-rstudio-server-with-docker/
-
-instructions below are adapted for singularity
-
-# Dockerfile
-
-The dockerfile in this project loads the ubuntu system dependencies from 
-Dave Tang's blog. I added R CRAN and Bioconductor dependencies. But, what 
-is important is that you will be binding a system directory to the container so 
-that any packages installed in the container will persist outside of it 
-from session to session.
-
-# Build and push
-
-```sh
-docker build -t <dockerhub username>/<image name> .
+```bash
+apptainer exec <image>.sif bash -c 'command -v R; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
 ```
 
-```sh
-docker push <dockerhub username>/<image name>
+Both need to print a path. Most conda-built images (which is what Seqera
+Containers produces) do not ship `rserver`. If yours does not, use an image
+that does, e.g. `apptainer pull docker://rocker/rstudio:4.5.3`.
+
+## Get the image on the cluster
+
+Either build one at Seqera Containers and download the `.sif`, or
+`apptainer pull` a container from a registry. Put it somewhere shared, e.g.
+under `/ref/` or `/lts/`.
+
+## Launch
+
+`/scratch`, `/lts`, `/home` and `/ref` are mounted into containers on the
+HTCF, so no `-B` flags are needed for them. The persistent library is used at
+its real path inside the container.
+
+```bash
+mkdir -p logs
+sbatch rstudio_apptainer.sbatch \
+    /path/to/image.sif \
+    /ref/mblab/software/chasem/R/4.5.3
 ```
 
-# Singularity pull on the cluster
+Override resources at submission if needed:
 
-```sh
-
-interactive
-
-eval $(spack load --sh singularityce@3.8.0)
-
-# you can fill in your own username/image name here, or feel free to 
-# use mine
-singularity pull docker://cmatkhan/htcf_rstudio_server
+```bash
+sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_apptainer.sbatch <sif> <libpath>
 ```
 
-# submit via SBATCH
+Arguments:
 
-***Note***: Even afer the job launches and you get output in the SLURM log, you may have to wait a moment
-for the container to start.
+- `$1` path to the `.sif` image
+- `$2` persistent library directory (must already exist, and be writable by you)
 
-see the script in this project rstudio_singularity.sbatch
+## Connect
 
-There are two cmd line arguments.
+Once the job starts, `logs/rstudio_<jobid>.out` contains an SSH tunnel command
+and a `localhost` URL. Run the `ssh ... -N -L ...` command in a terminal on
+your own machine, then open the URL. The server can take a short while to
+respond after the log message appears.
 
-`$1`: path to the singularity image file
+## Set the persistent library (every session)
 
-`$2`: path to the persistent library path. This will get bound to 
-`/package` in the container and it is what will be the first path in the R 
-`.libPaths()`. If you install a package while using rstudio in the container, 
-it will be saved on the system (so it is persistent -- you won't have to 
-reinstall packages every time you launch the container if you always provide 
-the same path)
+Setting the library through R config files (`.Rprofile`, `Renviron`) did not
+work reliably inside the container, so it is set interactively instead.
+**In the RStudio console, at the start of each session:**
 
-## example submission
-
-```sh
-sbatch --mem-per-cpu=10G -N 1 -n 5 --time=120 scripts/rstudio_singularity.sbatch software/htcf_rstudio_server_latest.sif $PWD/R/4.2/
+```r
+.libPaths(c("/ref/mblab/software/chasem/R/4.5.3", .libPaths()))
+.libPaths()   # confirm your directory is listed first
 ```
+
+Because the path is first, `install.packages()` and `BiocManager::install()`
+write there, and packages already in it are found first. The image's own
+packages stay available as a fallback. Use the same directory every session
+and nothing needs reinstalling.
+
+Notes:
+
+- The directory must match the R version of the image (4.5.x here). Do not
+  share one library between different R minor versions.
+- Installing from source needs compilers. If a package fails to build, the
+  image is likely missing them; add them to the image or install a binary.
+- If installs fail with "not writable", check that you can `touch` a file in
+  the directory from inside the container.
+
+## Security note
+
+`rserver` is started without authentication and listens on the compute node,
+as in the original version of this repo. Anyone who can reach that node's
+port can open a session as you. Keep sessions short and cancel the job
+(`scancel <jobid>`) when you are done.
+
+## Credit
+
+Adapted from David Tang's post on running RStudio Server with Docker:
+<https://davetang.org/muse/2021/04/24/running-rstudio-server-with-docker/>
