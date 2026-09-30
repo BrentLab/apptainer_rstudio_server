@@ -1,68 +1,101 @@
-# Purpose
+# Run RStudio Server on the HTCF with Apptainer
 
-There can be some difficulty in running rstudio server on the HTCF -- one has to do with the compiled software paths that R relies on, another with controlling where R puts downloaded packages. Using a container addresses these issues.  
+RStudio Server on the HTCF needs two things sorted out: the compiled software
+R relies on, and where R puts installed packages. A container handles the
+first. A persistent library directory, bound in from the cluster filesystem,
+handles the second: packages you install in one session are still there the
+next time.
 
-The container is configured so that you can mount a path into the container where any packages installed during an interactive session are saved. If you mount the same path from session to session, then you have a persistent software library. It also comes with most commonly used R software from CRAN and bioconductor pre-installed.
+There is no Dockerfile in this repo. The image is `rocker/rstudio:4.6.1`,
+pulled with Apptainer. It includes R 4.6.1 and RStudio Server.
 
-# Cite
+## Get the image on the cluster
 
-This is an exact copy of David Tang's post here:
-
-https://davetang.org/muse/2021/04/24/running-rstudio-server-with-docker/
-
-instructions below are adapted for singularity
-
-# Dockerfile
-
-The dockerfile in this project loads the ubuntu system dependencies from 
-Dave Tang's blog. I added R CRAN and Bioconductor dependencies. But, what 
-is important is that you will be binding a system directory to the container so 
-that any packages installed in the container will persist outside of it 
-from session to session.
-
-# Build and push
-
-```sh
-docker build -t <dockerhub username>/<image name> .
+```bash
+apptainer pull rstudio_4.6.1.sif docker://rocker/rstudio:4.6.1
 ```
 
-```sh
-docker push <dockerhub username>/<image name>
+Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
+
+To confirm the image has what the sbatch script needs:
+
+```bash
+apptainer exec rstudio_4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
 ```
 
-# Singularity pull on the cluster
+Any other image works if it contains both R and `rserver`.
 
-```sh
+## Launch
 
-interactive
+`/scratch`, `/lts`, `/home` and `/ref` are mounted into containers on the
+HTCF, so no `-B` flags are needed for them.
 
-eval $(spack load --sh singularityce@3.8.0)
-
-# you can fill in your own username/image name here, or feel free to 
-# use mine
-singularity pull docker://cmatkhan/htcf_rstudio_server
+```bash
+mkdir -p logs
+sbatch rstudio_apptainer.sbatch \
+    /path/to/rstudio_4.6.1.sif \
+    /ref/mblab/software/chasem/R
 ```
 
-# submit via SBATCH
+Override resources at submission if needed:
 
-***Note***: Even afer the job launches and you get output in the SLURM log, you may have to wait a moment
-for the container to start.
-
-see the script in this project rstudio_singularity.sbatch
-
-There are two cmd line arguments.
-
-`$1`: path to the singularity image file
-
-`$2`: path to the persistent library path. This will get bound to 
-`/package` in the container and it is what will be the first path in the R 
-`.libPaths()`. If you install a package while using rstudio in the container, 
-it will be saved on the system (so it is persistent -- you won't have to 
-reinstall packages every time you launch the container if you always provide 
-the same path)
-
-## example submission
-
-```sh
-sbatch --mem-per-cpu=10G -N 1 -n 5 --time=120 scripts/rstudio_singularity.sbatch software/htcf_rstudio_server_latest.sif $PWD/R/4.2/
+```bash
+sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_apptainer.sbatch <sif> <lib_base_dir>
 ```
+
+Arguments:
+
+- `$1` path to the `.sif` image
+- `$2` base directory for persistent R libraries (must already exist, and be
+  writable by you). A per-R-version subdirectory is created inside it.
+
+## Connect
+
+Once the job starts, `logs/rstudio_<jobid>.out` contains an SSH tunnel command
+and a `localhost` URL. Run the `ssh ... -N -L ...` command in a terminal on
+your own machine, then open the URL. The server can take a short while to
+respond after the log message appears.
+
+## Persistent library
+
+The sbatch script writes a small R profile into the job's temp directory and
+points `R_PROFILE_USER` at it, so every R session that server starts runs:
+
+```r
+local({
+  v   <- paste(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")  # "4.6"
+  lib <- file.path("<lib_base_dir>", v)
+  if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)  # .libPaths() silently drops missing dirs
+  .libPaths(c(lib, .libPaths()))
+})
+```
+
+Nothing is added to `$HOME`, so other R runs are unaffected. (For the same
+reason, `~/.Rprofile` is not read in these sessions.) Check with
+`.libPaths()`: your directory should be listed first.
+
+Because the path is first, `install.packages()` and `BiocManager::install()`
+write there, and packages already in it are found first. The image's own
+packages stay available as a fallback. Use the same base directory every
+session and nothing needs reinstalling.
+
+Notes:
+
+- Each R major.minor version gets its own subdirectory (`.../R/4.6`), so
+  upgrading the image does not mix libraries.
+- Installing from source needs compilers. If a package fails to build, the
+  image is likely missing them; add them to the image or install a binary.
+- If installs fail with "not writable", check that you can `touch` a file in
+  the directory from inside the container.
+
+## Security note
+
+`rserver` is started without authentication and listens on the compute node,
+as in the original version of this repo. Anyone who can reach that node's
+port can open a session as you. Keep sessions short and cancel the job
+(`scancel <jobid>`) when you are done.
+
+## Credit
+
+Adapted from David Tang's post on running RStudio Server with Docker:
+<https://davetang.org/muse/2021/04/24/running-rstudio-server-with-docker/>
