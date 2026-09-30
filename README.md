@@ -12,7 +12,7 @@ pulled with Apptainer. It includes R 4.6.1 and RStudio Server.
 ## Get the image on the cluster
 
 ```bash
-apptainer pull rstudio-4.6.1.sif docker://rocker/rstudio:4.6.1
+apptainer pull rstudio_4.6.1.sif docker://rocker/rstudio:4.6.1
 ```
 
 Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
@@ -20,7 +20,7 @@ Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
 To confirm the image has what the sbatch script needs:
 
 ```bash
-apptainer exec rstudio-4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
+apptainer exec rstudio_4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
 ```
 
 Any other image works if it contains both R and `rserver`.
@@ -33,7 +33,7 @@ HTCF, so no `-B` flags are needed for them.
 ```bash
 mkdir -p logs
 sbatch rstudio_apptainer.sbatch \
-    /path/to/rstudio-4.6.1.sif \
+    /path/to/rstudio_4.6.1.sif \
     /ref/mblab/software/chasem/R
 ```
 
