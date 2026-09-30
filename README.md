@@ -6,28 +6,27 @@ first. A persistent library directory, bound in from the cluster filesystem,
 handles the second: packages you install in one session are still there the
 next time.
 
-There is no Dockerfile in this repo. Build the base image with
-[Seqera Containers](https://seqera.io/containers/) (or use any image you
-like) and point the sbatch script at the resulting `.sif`.
-
-## Image requirements
-
-The image must contain **R and `rserver`** (RStudio Server). Check before you
-submit anything:
-
-```bash
-apptainer exec <image>.sif bash -c 'command -v R; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
-```
-
-Both need to print a path. Most conda-built images (which is what Seqera
-Containers produces) do not ship `rserver`. If yours does not, use an image
-that does, e.g. `apptainer pull docker://rocker/rstudio:4.5.3`.
+There is no Dockerfile in this repo. The image is `rocker/tidyverse:latest`
+(currently R 4.6.1), pulled with Apptainer. It includes R, RStudio Server and
+the tidyverse.
 
 ## Get the image on the cluster
 
-Either build one at Seqera Containers and download the `.sif`, or
-`apptainer pull` a container from a registry. Put it somewhere shared, e.g.
-under `/ref/` or `/lts/`.
+```bash
+apptainer pull tidyverse-latest.sif docker://rocker/tidyverse:latest
+```
+
+Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`. `latest`
+moves when rocker updates R, so the R version of the image can change the
+next time you pull. See "Set the persistent library" below.
+
+To confirm the image has what the sbatch script needs:
+
+```bash
+apptainer exec tidyverse-latest.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
+```
+
+Any other image works if it contains both R and `rserver`.
 
 ## Launch
 
@@ -38,8 +37,8 @@ its real path inside the container.
 ```bash
 mkdir -p logs
 sbatch rstudio_apptainer.sbatch \
-    /path/to/image.sif \
-    /ref/mblab/software/chasem/R/4.5.3
+    /path/to/tidyverse-latest.sif \
+    /ref/mblab/software/chasem/R/4.6.1
 ```
 
 Override resources at submission if needed:
@@ -67,7 +66,7 @@ work reliably inside the container, so it is set interactively instead.
 **In the RStudio console, at the start of each session:**
 
 ```r
-.libPaths(c("/ref/mblab/software/chasem/R/4.5.3", .libPaths()))
+.libPaths(c("/ref/mblab/software/chasem/R/4.6.1", .libPaths()))
 .libPaths()   # confirm your directory is listed first
 ```
 
@@ -78,7 +77,7 @@ and nothing needs reinstalling.
 
 Notes:
 
-- The directory must match the R version of the image (4.5.x here). Do not
+- The directory must match the R version of the image (4.6.x here). Do not
   share one library between different R minor versions.
 - Installing from source needs compilers. If a package fails to build, the
   image is likely missing them; add them to the image or install a binary.
