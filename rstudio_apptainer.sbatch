@@ -10,20 +10,21 @@
 # Launch RStudio Server from an Apptainer image on the HTCF.
 #
 # usage (from a directory that contains a logs/ subdirectory):
-#   sbatch rstudio_apptainer.sbatch <image.sif> <persistent_libpath>
+#   sbatch rstudio_apptainer.sbatch <image.sif> <lib_base_dir>
 #
 # $1  path to the .sif image. It must contain both R and rserver.
-# $2  persistent R library directory (must already exist). It is NOT
-#     configured automatically -- after RStudio starts, follow the
-#     ".libPaths()" step in the README.
+# $2  base directory for persistent R libraries (must already exist and be
+#     writable). A subdirectory per R major.minor version (e.g. 4.6) is
+#     created inside it and put first on .libPaths() via a per-job
+#     R_PROFILE_USER file, so nothing needs to be added to $HOME.
 #
 # /scratch, /lts, /home and /ref are mounted into containers on the HTCF,
-# so the libpath is visible inside the container at the same path.
+# so the lib base dir is visible inside the container at the same path.
 
 set -euo pipefail
 
-sif=${1:?usage: sbatch rstudio_apptainer.sbatch <image.sif> <persistent_libpath>}
-libpath=${2:?usage: sbatch rstudio_apptainer.sbatch <image.sif> <persistent_libpath>}
+sif=${1:?usage: sbatch rstudio_apptainer.sbatch <image.sif> <lib_base_dir>}
+libbase=${2:?usage: sbatch rstudio_apptainer.sbatch <image.sif> <lib_base_dir>}
 
 # ------ Sanity checks ------
 if [ -z "${SLURM_JOBID:-}" ]; then
@@ -38,8 +39,8 @@ if [ ! -f "$sif" ]; then
     echo "Error: image not found: $sif" >&2
     exit 1
 fi
-if [ ! -d "$libpath" ]; then
-    echo "Error: libpath does not exist: $libpath (mkdir it first)" >&2
+if [ ! -d "$libbase" ]; then
+    echo "Error: lib base dir does not exist: $libbase (mkdir it first)" >&2
     exit 1
 fi
 
@@ -67,6 +68,19 @@ provider=sqlite
 directory=$RSTUDIO_TMP/db
 DBCONF
 
+# R profile run by every R session this server starts (via R_PROFILE_USER).
+# Replaces ~/.Rprofile for these sessions only; other R runs are unaffected.
+cat > "$RSTUDIO_TMP/Rprofile" <<RPROFILE
+local({
+  v   <- paste(R.version\$major, sub("\\\\..*", "", R.version\$minor), sep = ".")
+  lib <- file.path("$libbase", v)
+  # .libPaths() silently drops directories that do not exist
+  if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)
+  .libPaths(c(lib, .libPaths()))
+})
+RPROFILE
+export R_PROFILE_USER="$RSTUDIO_TMP/Rprofile"
+
 echo -e "
 In a local terminal, create an SSH tunnel to $host
 -----------------------------------------------------------------
@@ -77,9 +91,6 @@ Then open this address in a web browser
 http://localhost:$port
 -----------------------------------------------------------------
 It can take a moment after this message before the server responds.
-
-First thing in the RStudio console:
-  .libPaths(c(\"$libpath\", .libPaths()))
 "
 
 # ------ Launch RStudio Server ------

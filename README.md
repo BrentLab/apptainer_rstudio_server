@@ -6,24 +6,21 @@ first. A persistent library directory, bound in from the cluster filesystem,
 handles the second: packages you install in one session are still there the
 next time.
 
-There is no Dockerfile in this repo. The image is `rocker/tidyverse:latest`
-(currently R 4.6.1), pulled with Apptainer. It includes R, RStudio Server and
-the tidyverse.
+There is no Dockerfile in this repo. The image is `rocker/rstudio:4.6.1`,
+pulled with Apptainer. It includes R 4.6.1 and RStudio Server.
 
 ## Get the image on the cluster
 
 ```bash
-apptainer pull tidyverse-latest.sif docker://rocker/tidyverse:latest
+apptainer pull rstudio-4.6.1.sif docker://rocker/rstudio:4.6.1
 ```
 
-Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`. `latest`
-moves when rocker updates R, so the R version of the image can change the
-next time you pull. See "Set the persistent library" below.
+Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
 
 To confirm the image has what the sbatch script needs:
 
 ```bash
-apptainer exec tidyverse-latest.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
+apptainer exec rstudio-4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
 ```
 
 Any other image works if it contains both R and `rserver`.
@@ -31,26 +28,26 @@ Any other image works if it contains both R and `rserver`.
 ## Launch
 
 `/scratch`, `/lts`, `/home` and `/ref` are mounted into containers on the
-HTCF, so no `-B` flags are needed for them. The persistent library is used at
-its real path inside the container.
+HTCF, so no `-B` flags are needed for them.
 
 ```bash
 mkdir -p logs
 sbatch rstudio_apptainer.sbatch \
-    /path/to/tidyverse-latest.sif \
-    /ref/mblab/software/chasem/R/4.6.1
+    /path/to/rstudio-4.6.1.sif \
+    /ref/mblab/software/chasem/R
 ```
 
 Override resources at submission if needed:
 
 ```bash
-sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_apptainer.sbatch <sif> <libpath>
+sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_apptainer.sbatch <sif> <lib_base_dir>
 ```
 
 Arguments:
 
 - `$1` path to the `.sif` image
-- `$2` persistent library directory (must already exist, and be writable by you)
+- `$2` base directory for persistent R libraries (must already exist, and be
+  writable by you). A per-R-version subdirectory is created inside it.
 
 ## Connect
 
@@ -59,26 +56,33 @@ and a `localhost` URL. Run the `ssh ... -N -L ...` command in a terminal on
 your own machine, then open the URL. The server can take a short while to
 respond after the log message appears.
 
-## Set the persistent library (every session)
+## Persistent library
 
-Setting the library through R config files (`.Rprofile`, `Renviron`) did not
-work reliably inside the container, so it is set interactively instead.
-**In the RStudio console, at the start of each session:**
+The sbatch script writes a small R profile into the job's temp directory and
+points `R_PROFILE_USER` at it, so every R session that server starts runs:
 
 ```r
-.libPaths(c("/ref/mblab/software/chasem/R/4.6.1", .libPaths()))
-.libPaths()   # confirm your directory is listed first
+local({
+  v   <- paste(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")  # "4.6"
+  lib <- file.path("<lib_base_dir>", v)
+  if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)  # .libPaths() silently drops missing dirs
+  .libPaths(c(lib, .libPaths()))
+})
 ```
+
+Nothing is added to `$HOME`, so other R runs are unaffected. (For the same
+reason, `~/.Rprofile` is not read in these sessions.) Check with
+`.libPaths()`: your directory should be listed first.
 
 Because the path is first, `install.packages()` and `BiocManager::install()`
 write there, and packages already in it are found first. The image's own
-packages stay available as a fallback. Use the same directory every session
-and nothing needs reinstalling.
+packages stay available as a fallback. Use the same base directory every
+session and nothing needs reinstalling.
 
 Notes:
 
-- The directory must match the R version of the image (4.6.x here). Do not
-  share one library between different R minor versions.
+- Each R major.minor version gets its own subdirectory (`.../R/4.6`), so
+  upgrading the image does not mix libraries.
 - Installing from source needs compilers. If a package fails to build, the
   image is likely missing them; add them to the image or install a binary.
 - If installs fail with "not writable", check that you can `touch` a file in
