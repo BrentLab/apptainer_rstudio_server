@@ -33,8 +33,8 @@ HTCF, so no `-B` flags are needed for them.
 ```bash
 mkdir -p logs
 sbatch rstudio_apptainer.sbatch \
-    /path/to/rstudio_4.6.1.sif \
-    /ref/mblab/software/chasem/R
+    /ref/mblab/containers/chasem/rstudio_4.6.1.sif \
+    /ref/mblab/software/chasem/R/rstudio_4.6.1
 ```
 
 Override resources at submission if needed:
@@ -81,6 +81,13 @@ session and nothing needs reinstalling.
 
 Notes:
 
+- **Do not share a library directory between different images or hosts, even
+  at the same R version.** Compiled packages link against system libraries
+  (e.g. `libuv`) that exist only where they were built. A package built
+  elsewhere can fail to load in the container with an error like
+  `unable to load shared object '.../fs/libs/fs.so': libuv.so.1: cannot open
+  shared object file`. Use a separate base directory per image (as in the
+  launch example above), or reinstall the package from inside the container.
 - Each R major.minor version gets its own subdirectory (`.../R/4.6`), so
   upgrading the image does not mix libraries.
 - Installing from source needs compilers. If a package fails to build, the
