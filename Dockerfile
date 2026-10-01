@@ -52,7 +52,7 @@ RUN apt-get update && \
         libgsl-dev \
         libnlopt-dev \
         libudunits2-dev \
-        # graphics, fonts, images (ragg, systemfonts, Cairo, rgl, magick, EBImage)
+        # graphics, fonts, images (ragg, systemfonts, Cairo, rgl)
         libcairo2-dev \
         libxt-dev \
         libx11-dev \
@@ -64,7 +64,6 @@ RUN apt-get update && \
         libjpeg-dev \
         libtiff-dev \
         libwebp-dev \
-        libmagick++-dev \
         libgl1-mesa-dev \
         libglu1-mesa-dev \
         libpoppler-cpp-dev \
