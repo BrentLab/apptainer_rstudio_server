@@ -1,0 +1,403 @@
+From 5eda3048363fdcf742493cc062eab91c6de64a49 Mon Sep 17 00:00:00 2001
+From: Chase <noreply@example.com>
+Date: Wed, 30 Sep 2026 14:36:22 +0000
+Subject: [PATCH] Migrate to Apptainer; drop Dockerfile and .Rprofile libpath
+ config
+
+- Remove dockerfile: base image is built with Seqera Containers
+- Remove .Rprofile: setting the libpath via R config never worked reliably
+- Replace rstudio_singularity.sbatch with rstudio_apptainer.sbatch
+- Rewrite README; libpath is set interactively via .libPaths()
+---
+ .Rprofile                  |   1 -
+ README.md                  | 114 +++++++++++++++++++++++--------------
+ dockerfile                 |  35 ------------
+ rstudio_apptainer.sbatch   |  98 +++++++++++++++++++++++++++++++
+ rstudio_singularity.sbatch |  76 -------------------------
+ 5 files changed, 170 insertions(+), 154 deletions(-)
+ delete mode 100644 .Rprofile
+ delete mode 100644 dockerfile
+ create mode 100644 rstudio_apptainer.sbatch
+ delete mode 100644 rstudio_singularity.sbatch
+
+diff --git a/.Rprofile b/.Rprofile
+deleted file mode 100644
+index ce73133..0000000
+--- a/.Rprofile
++++ /dev/null
+@@ -1 +0,0 @@
+-.libPaths("/packages/")
+diff --git a/README.md b/README.md
+index 9f6a921..839ba98 100644
+--- a/README.md
++++ b/README.md
+@@ -1,68 +1,98 @@
+-# Purpose
++# Run RStudio Server on the HTCF with Apptainer
+
+-There can be some difficulty in running rstudio server on the HTCF -- one has to do with the compiled software paths that R relies on, another with controlling where R puts downloaded packages. Using a container addresses these issues.
++RStudio Server on the HTCF needs two things sorted out: the compiled software
++R relies on, and where R puts installed packages. A container handles the
++first. A persistent library directory, bound in from the cluster filesystem,
++handles the second: packages you install in one session are still there the
++next time.
+
+-The container is configured so that you can mount a path into the container where any packages installed during an interactive session are saved. If you mount the same path from session to session, then you have a persistent software library. It also comes with most commonly used R software from CRAN and bioconductor pre-installed.
++There is no Dockerfile in this repo. Build the base image with
++[Seqera Containers](https://seqera.io/containers/) (or use any image you
++like) and point the sbatch script at the resulting `.sif`.
+
+-# Cite
++## Image requirements
+
+-This is an exact copy of David Tang's post here:
++The image must contain **R and `rserver`** (RStudio Server). Check before you
++submit anything:
+
+-https://davetang.org/muse/2021/04/24/running-rstudio-server-with-docker/
++```bash
++apptainer exec <image>.sif bash -c 'command -v R; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
++```
++
++Both need to print a path. Most conda-built images (which is what Seqera
++Containers produces) do not ship `rserver`. If yours does not, use an image
++that does, e.g. `apptainer pull docker://rocker/rstudio:4.5.3`.
+
+-instructions below are adapted for singularity
++## Get the image on the cluster
+
+-# Dockerfile
++Either build one at Seqera Containers and download the `.sif`, or
++`apptainer pull` a container from a registry. Put it somewhere shared, e.g.
++under `/ref/` or `/lts/`.
+
+-The dockerfile in this project loads the ubuntu system dependencies from
+-Dave Tang's blog. I added R CRAN and Bioconductor dependencies. But, what
+-is important is that you will be binding a system directory to the container so
+-that any packages installed in the container will persist outside of it
+-from session to session.
++## Launch
+
+-# Build and push
++`/scratch`, `/lts`, `/home` and `/ref` are mounted into containers on the
++HTCF, so no `-B` flags are needed for them. The persistent library is used at
++its real path inside the container.
+
+-```sh
+-docker build -t <dockerhub username>/<image name> .
++```bash
++mkdir -p logs
++sbatch rstudio_apptainer.sbatch \
++    /path/to/image.sif \
++    /ref/mblab/software/chasem/R/4.5.3
+ ```
+
+-```sh
+-docker push <dockerhub username>/<image name>
++Override resources at submission if needed:
++
++```bash
++sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_apptainer.sbatch <sif> <libpath>
+ ```
+
+-# Singularity pull on the cluster
++Arguments:
+
+-```sh
++- `$1` path to the `.sif` image
++- `$2` persistent library directory (must already exist, and be writable by you)
+
+-interactive
++## Connect
+
+-eval $(spack load --sh singularityce@3.8.0)
++Once the job starts, `logs/rstudio_<jobid>.out` contains an SSH tunnel command
++and a `localhost` URL. Run the `ssh ... -N -L ...` command in a terminal on
++your own machine, then open the URL. The server can take a short while to
++respond after the log message appears.
+
+-# you can fill in your own username/image name here, or feel free to
+-# use mine
+-singularity pull docker://cmatkhan/htcf_rstudio_server
+-```
++## Set the persistent library (every session)
+
+-# submit via SBATCH
++Setting the library through R config files (`.Rprofile`, `Renviron`) did not
++work reliably inside the container, so it is set interactively instead.
++**In the RStudio console, at the start of each session:**
+
+-***Note***: Even afer the job launches and you get output in the SLURM log, you may have to wait a moment
+-for the container to start.
++```r
++.libPaths(c("/ref/mblab/software/chasem/R/4.5.3", .libPaths()))
++.libPaths()   # confirm your directory is listed first
++```
+
+-see the script in this project rstudio_singularity.sbatch
++Because the path is first, `install.packages()` and `BiocManager::install()`
++write there, and packages already in it are found first. The image's own
++packages stay available as a fallback. Use the same directory every session
++and nothing needs reinstalling.
+
+-There are two cmd line arguments.
++Notes:
+
+-`$1`: path to the singularity image file
++- The directory must match the R version of the image (4.5.x here). Do not
++  share one library between different R minor versions.
++- Installing from source needs compilers. If a package fails to build, the
++  image is likely missing them; add them to the image or install a binary.
++- If installs fail with "not writable", check that you can `touch` a file in
++  the directory from inside the container.
+
+-`$2`: path to the persistent library path. This will get bound to
+-`/package` in the container and it is what will be the first path in the R
+-`.libPaths()`. If you install a package while using rstudio in the container,
+-it will be saved on the system (so it is persistent -- you won't have to
+-reinstall packages every time you launch the container if you always provide
+-the same path)
++## Security note
+
+-## example submission
++`rserver` is started without authentication and listens on the compute node,
++as in the original version of this repo. Anyone who can reach that node's
++port can open a session as you. Keep sessions short and cancel the job
++(`scancel <jobid>`) when you are done.
+
+-```sh
+-sbatch --mem-per-cpu=10G -N 1 -n 5 --time=120 scripts/rstudio_singularity.sbatch software/htcf_rstudio_server_latest.sif $PWD/R/4.2/
+-```
++## Credit
++
++Adapted from David Tang's post on running RStudio Server with Docker:
++<https://davetang.org/muse/2021/04/24/running-rstudio-server-with-docker/>
+diff --git a/dockerfile b/dockerfile
+deleted file mode 100644
+index e74a2a8..0000000
+--- a/dockerfile
++++ /dev/null
+@@ -1,35 +0,0 @@
+-FROM rocker/rstudio:4.2.2
+-
+-MAINTAINER chase mateusiak <chasem@wustl.edu>
+-
+-RUN apt-get clean all && \
+-  apt-get update && \
+-  apt-get upgrade -y && \
+-  apt-get install -y \
+-    libhdf5-dev \
+-    libcurl4-gnutls-dev \
+-    libssl-dev \
+-    libxml2-dev \
+-    libpng-dev \
+-    libxt-dev \
+-    zlib1g-dev \
+-    libbz2-dev \
+-    liblzma-dev \
+-    libglpk40 \
+-    libgit2-dev \
+-    libpq-dev \
+-    libssl-dev \
+-    curl \
+-    wget \
+-  && apt-get clean all && \
+-  apt-get purge && \
+-  apt-get autoremove && \
+-  rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+-
+-RUN Rscript -e "install.packages(c('usethis', 'devtools', 'remotes', 'renv', 'future', 'doFuture', 'furrr', 'future.batchtools', 'future.callr', 'future.apply', 'progressr', 'future.tests', 'parallelly', 'RPostgres', 'rmarkdown', 'tidyverse', 'workflowr','BiocManager', 'usethis', 'ggplot2','RSQLite', 'readxl', 'here', 'vroom', 'caret', 'broom', 'ggsci', 'DT', 'TidyMultiqc'), Ncpus=10);"
+-RUN Rscript -e "BiocManager::install(version = '3.21')"
+-RUN Rscript -e "BiocManager::install(c('Biobase', 'DESeq2', 'tximport', 'edgeR'), Ncpus=10)"
+-
+-
+-#COPY user-settings /home/rstudio/.rstudio/monitored/user-settings/user-settings
+-COPY .Rprofile /home/rstudio/
+diff --git a/rstudio_apptainer.sbatch b/rstudio_apptainer.sbatch
+new file mode 100644
+index 0000000..1b1671f
+--- /dev/null
++++ b/rstudio_apptainer.sbatch
+@@ -0,0 +1,98 @@
++#!/bin/bash
++#SBATCH --job-name=rstudio
++#SBATCH --output=logs/rstudio_%j.out
++#SBATCH --error=logs/rstudio_%j.err
++#SBATCH --partition=interactive
++#SBATCH --cpus-per-task=4
++#SBATCH --mem=16G
++#SBATCH --time=12:00:00
++
++# Launch RStudio Server from an Apptainer image on the HTCF.
++#
++# usage (from a directory that contains a logs/ subdirectory):
++#   sbatch rstudio_apptainer.sbatch <image.sif> <persistent_libpath>
++#
++# $1  path to the .sif image. It must contain both R and rserver.
++# $2  persistent R library directory (must already exist). It is NOT
++#     configured automatically -- after RStudio starts, follow the
++#     ".libPaths()" step in the README.
++#
++# /scratch, /lts, /home and /ref are mounted into containers on the HTCF,
++# so the libpath is visible inside the container at the same path.
++
++set -euo pipefail
++
++sif=${1:?usage: sbatch rstudio_apptainer.sbatch <image.sif> <persistent_libpath>}
++libpath=${2:?usage: sbatch rstudio_apptainer.sbatch <image.sif> <persistent_libpath>}
++
++# ------ Sanity checks ------
++if [ -z "${SLURM_JOBID:-}" ]; then
++    echo "Error: must be run as a job (use sbatch)" >&2
++    exit 1
++fi
++if ! command -v apptainer >/dev/null 2>&1; then
++    echo "Error: apptainer not found on PATH" >&2
++    exit 1
++fi
++if [ ! -f "$sif" ]; then
++    echo "Error: image not found: $sif" >&2
++    exit 1
++fi
++if [ ! -d "$libpath" ]; then
++    echo "Error: libpath does not exist: $libpath (mkdir it first)" >&2
++    exit 1
++fi
++
++# ------ Find rserver and R inside the image ------
++rserver=$(apptainer exec "$sif" bash -c \
++    'command -v rserver || ls /usr/lib/rstudio-server/bin/rserver' 2>/dev/null || true)
++if [ -z "$rserver" ]; then
++    echo "Error: rserver not found in $sif -- this image cannot run RStudio Server" >&2
++    exit 1
++fi
++rbin=$(apptainer exec "$sif" which R)
++
++# Keep host R settings from leaking into the container's R
++unset R_LIBS R_LIBS_USER R_LIBS_SITE XDG_RUNTIME_DIR
++
++# ------ Per-job scratch space for rserver ------
++port=$(shuf -i9000-9999 -n1)
++host=$(hostname)
++RSTUDIO_TMP=/tmp/rstudio-$USER-$SLURM_JOBID
++mkdir -p "$RSTUDIO_TMP"/{data,db,run,var-lib}
++trap 'rm -rf "$RSTUDIO_TMP"' EXIT
++
++cat > "$RSTUDIO_TMP/rstudio-database.conf" <<DBCONF
++provider=sqlite
++directory=$RSTUDIO_TMP/db
++DBCONF
++
++echo -e "
++In a local terminal, create an SSH tunnel to $host
++-----------------------------------------------------------------
++ssh $USER@login.htcf.wustl.edu -N -L $port:$host:$port
++-----------------------------------------------------------------
++Then open this address in a web browser
++-----------------------------------------------------------------
++http://localhost:$port
++-----------------------------------------------------------------
++It can take a moment after this message before the server responds.
++
++First thing in the RStudio console:
++  .libPaths(c(\"$libpath\", .libPaths()))
++"
++
++# ------ Launch RStudio Server ------
++apptainer exec \
++    -B "$RSTUDIO_TMP" \
++    -B "$RSTUDIO_TMP/run:/run" \
++    -B "$RSTUDIO_TMP/var-lib:/var/lib/rstudio-server" \
++    "$sif" \
++    "$rserver" \
++    --www-port "$port" \
++    --secure-cookie-key-file "$RSTUDIO_TMP/secure-cookie-key" \
++    --server-data-dir "$RSTUDIO_TMP/data" \
++    --server-pid-file "$RSTUDIO_TMP/rstudio.pid" \
++    --database-config-file "$RSTUDIO_TMP/rstudio-database.conf" \
++    --rsession-which-r "$rbin" \
++    --server-user "$USER"
+diff --git a/rstudio_singularity.sbatch b/rstudio_singularity.sbatch
+deleted file mode 100644
+index 2466e19..0000000
+--- a/rstudio_singularity.sbatch
++++ /dev/null
+@@ -1,76 +0,0 @@
+-#!/bin/bash
+-
+-# ------ SLURM Parameters ------
+-
+-# rstudio-server is interactive.  Use the interactive partition
+-# Add cpu or memory slurm parameters as needed
+-
+-#SBATCH -p interactive
+-
+-
+-# ------ cmd line input -------
+-
+-# path to the singularity image
+-sif=$1
+-
+-# path to the lib path to which /packages is
+-# mounted in the container. See the .Rprofile
+-# and the dockerfile for details
+-libpath=$2
+-
+-# ------ Make sure it's run as a job ------
+-
+-if [ -z "${SLURM_JOBID}" ]; then
+-    echo "Error: Must be run as a job"
+-    exit 1
+-fi
+-
+-# ------ Load environment ------
+-
+-eval $(spack load --sh singularityce@3.8.0)
+-
+-# ------ Prep and run rstudio ------
+-
+-
+-unset XDG_RUNTIME_DIR
+-port=$(shuf -i9000-9999 -n1)
+-host=$(hostname)
+-
+-TMPDIR=/tmp/rstudio-$USER-$SLURM_JOBID
+-mkdir ${TMPDIR}
+-mkdir ${TMPDIR}/data
+-mkdir ${TMPDIR}/db
+-
+-cat <<EOF >$TMPDIR/rstudio-database.conf
+-provider=sqlite
+-
+-# Directory in which the sqlite database will be written
+-directory=$TMPDIR/db
+-EOF
+-
+-echo -e "
+-    In a local terminal, create SSH tunnel to $host
+-    -----------------------------------------------------------------
+-    ssh $USER@login.htcf.wustl.edu -N -L $port:$host:$port
+-    -----------------------------------------------------------------
+-
+-    Go to the following address in a web browser
+-    -----------------------------------------------------------------
+-    http://localhost:$port
+-    -----------------------------------------------------------------
+-    "
+-
+-# Launch rstudio server
+-singularity exec \
+-   -B $libpath:/packages \
+-   -B ${TMPDIR} \
+-   -B /scratch/<lab>/<your_scratch_dir> \
+-   -B /ref/<lab>/data \
+-   $sif \
+-   rserver \
+-     --www-port $port \
+-     --secure-cookie-key-file ${TMPDIR}/secure-cookie-key \
+-     --server-data-dir ${TMPDIR}/data \
+-     --server-pid-file ${TMPDIR}/rstudio.pid \
+-     --database-config-file ${TMPDIR}/rstudio-database.conf \
+-     --server-user=$USER
+--
+2.43.0
