@@ -1,0 +1,118 @@
+#!/bin/bash
+#SBATCH --job-name=rstudio
+#SBATCH --output=logs/rstudio_%j.out
+#SBATCH --error=logs/rstudio_%j.err
+#SBATCH --partition=interactive
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=12:00:00
+
+# Launch RStudio Server from the Spack package (spack/ in this repo) on the HTCF.
+#
+# usage (from a directory that contains a logs/ subdirectory):
+#   sbatch rstudio_spack.sbatch <lib_base_dir> [r_spec]
+#
+# $1  base directory for persistent R libraries (must already exist and be
+#     writable). A subdirectory per R major.minor version (e.g. 4.6) is
+#     created inside it and put first on .libPaths(), so nothing needs to be
+#     added to $HOME.
+# $2  optional Spack spec for R (default: r). The R version is part of the
+#     rstudio-server install, so if more than one R is installed you may have
+#     to say which one to use, e.g. r@4.6.1. rstudio-server must have been
+#     installed with that R:  spack install rstudio-server ^r@4.6.1
+#
+# The 'spack' command must be on PATH.
+
+set -euo pipefail
+
+usage="usage: sbatch rstudio_spack.sbatch <lib_base_dir> [r_spec, e.g. r@4.6.1]"
+libbase=${1:?$usage}
+rspec=${2:-r}
+
+# ------ Sanity checks ------
+if [ -z "${SLURM_JOBID:-}" ]; then
+    echo "Error: must be run as a job (use sbatch)" >&2
+    exit 1
+fi
+if ! command -v spack >/dev/null 2>&1; then
+    echo "Error: spack not found on PATH" >&2
+    exit 1
+fi
+if [ ! -d "$libbase" ]; then
+    echo "Error: lib base dir does not exist: $libbase (mkdir it first)" >&2
+    exit 1
+fi
+
+# ------ Load RStudio Server and R ------
+eval "$(spack load --sh rstudio-server ^"$rspec")"
+if ! command -v rserver >/dev/null 2>&1 || ! command -v R >/dev/null 2>&1; then
+    echo "Error: rserver and R not both found after: spack load rstudio-server ^$rspec" >&2
+    exit 1
+fi
+# rsession lives next to the real rserver, not next to the symlink in bin/
+rserver=$(readlink -f "$(command -v rserver)")
+rbin=$(command -v R)
+
+# Keep host R settings from leaking into R
+unset R_LIBS R_LIBS_USER R_LIBS_SITE XDG_RUNTIME_DIR
+
+# ------ Per-job scratch space for rserver ------
+port=$(shuf -i9000-9999 -n1)
+host=$(hostname)
+RSTUDIO_TMP=/tmp/rstudio-$USER-$SLURM_JOBID
+mkdir -p "$RSTUDIO_TMP"/{data,db,rstudio-data}
+trap 'rm -rf "$RSTUDIO_TMP"' EXIT
+
+# Keep RStudio's per-user state (session metadata, suspended R state, history,
+# open tabs) in the per-job directory instead of ~/.local/share/rstudio, so a
+# new job never resumes a previous job's session. (Preferences stay in
+# ~/.config/rstudio.)
+export RSTUDIO_DATA_HOME="$RSTUDIO_TMP/rstudio-data"
+
+cat > "$RSTUDIO_TMP/rstudio-database.conf" <<DBCONF
+provider=sqlite
+directory=$RSTUDIO_TMP/db
+DBCONF
+
+# Per-version library directory. R ignores a library path that does not exist,
+# so create it now.
+rver=$(Rscript -e 'cat(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")')
+libdir="${libbase%/}/$rver"
+mkdir -p "$libdir"
+
+# rsession discards R_LIBS, R_LIBS_USER and R_PROFILE_USER from its environment
+# (and rserver does not pass its own environment on), so the library cannot be
+# set by exporting variables. rsession has its own --r-libs-user option;
+# RStudio puts that directory first on .libPaths(). rserver only lets us
+# choose the rsession command, so this wrapper adds the flag.
+cat > "$RSTUDIO_TMP/rsession.sh" <<RSESSION
+#!/bin/bash
+export RSTUDIO_DATA_HOME="$RSTUDIO_TMP/rstudio-data"
+exec "$(dirname "$rserver")/rsession" --r-libs-user "$libdir" "\$@"
+RSESSION
+chmod +x "$RSTUDIO_TMP/rsession.sh"
+
+echo -e "
+R library for this session: $libdir
+
+In a local terminal, create an SSH tunnel to $host
+-----------------------------------------------------------------
+ssh $USER@login.htcf.wustl.edu -N -L $port:$host:$port
+-----------------------------------------------------------------
+Then open this address in a web browser
+-----------------------------------------------------------------
+http://localhost:$port
+-----------------------------------------------------------------
+It can take a moment after this message before the server responds.
+"
+
+# ------ Launch RStudio Server ------
+"$rserver" \
+    --www-port "$port" \
+    --secure-cookie-key-file "$RSTUDIO_TMP/secure-cookie-key" \
+    --server-data-dir "$RSTUDIO_TMP/data" \
+    --server-pid-file "$RSTUDIO_TMP/rstudio.pid" \
+    --database-config-file "$RSTUDIO_TMP/rstudio-database.conf" \
+    --rsession-path "$RSTUDIO_TMP/rsession.sh" \
+    --rsession-which-r "$rbin" \
+    --server-user "$USER"
