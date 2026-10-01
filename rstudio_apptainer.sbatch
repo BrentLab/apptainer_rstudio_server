@@ -68,7 +68,9 @@ provider=sqlite
 directory=$RSTUDIO_TMP/db
 DBCONF
 
-# R profile run by every R session this server starts (via R_PROFILE_USER).
+# R profile run by every R session this server starts. rserver launches
+# rsession with a cleaned environment, so R_PROFILE_USER cannot just be exported
+# here; it is set in the rsession wrapper below instead.
 # Replaces ~/.Rprofile for these sessions only; other R runs are unaffected.
 cat > "$RSTUDIO_TMP/Rprofile" <<RPROFILE
 local({
@@ -79,7 +81,13 @@ local({
   .libPaths(c(lib, .libPaths()))
 })
 RPROFILE
+
+cat > "$RSTUDIO_TMP/rsession.sh" <<RSESSION
+#!/bin/bash
 export R_PROFILE_USER="$RSTUDIO_TMP/Rprofile"
+exec "$(dirname "$rserver")/rsession" "\$@"
+RSESSION
+chmod +x "$RSTUDIO_TMP/rsession.sh"
 
 echo -e "
 In a local terminal, create an SSH tunnel to $host
@@ -105,5 +113,6 @@ apptainer exec \
     --server-data-dir "$RSTUDIO_TMP/data" \
     --server-pid-file "$RSTUDIO_TMP/rstudio.pid" \
     --database-config-file "$RSTUDIO_TMP/rstudio-database.conf" \
+    --rsession-path "$RSTUDIO_TMP/rsession.sh" \
     --rsession-which-r "$rbin" \
     --server-user "$USER"

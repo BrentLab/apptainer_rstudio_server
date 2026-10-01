@@ -6,13 +6,29 @@ first. A persistent library directory, bound in from the cluster filesystem,
 handles the second: packages you install in one session are still there the
 next time.
 
-There is no Dockerfile in this repo. The image is `rocker/rstudio:4.6.1`,
-pulled with Apptainer. It includes R 4.6.1 and RStudio Server.
+The `Dockerfile` in this repo builds on `rocker/rstudio:4.6.1` and adds the
+system libraries needed to run and compile CRAN and Bioconductor packages
+(libuv, libcurl, libxml2, hdf5, graphics and font libraries, GDAL/GEOS/PROj,
+and more). No R packages are baked in; they live in the persistent library.
+
+The stock `rocker/rstudio` image is minimal. R installs precompiled binaries
+from Posit Package Manager, and those need matching system libraries at run
+time. Without them, packages fail to load, e.g. `fs`:
+`libuv.so.1: cannot open shared object file`.
+
+## Build the image
+
+On a machine with Docker:
+
+```bash
+docker build -t <dockerhub username>/rstudio-bioc:4.6.1 .
+docker push <dockerhub username>/rstudio-bioc:4.6.1
+```
 
 ## Get the image on the cluster
 
 ```bash
-apptainer pull rstudio_4.6.1.sif docker://rocker/rstudio:4.6.1
+apptainer pull rstudio_bioc_4.6.1.sif docker://<dockerhub username>/rstudio-bioc:4.6.1
 ```
 
 Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
@@ -20,10 +36,11 @@ Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
 To confirm the image has what the sbatch script needs:
 
 ```bash
-apptainer exec rstudio_4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver'
+apptainer exec rstudio_bioc_4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver; ldconfig -p | grep libuv'
 ```
 
-Any other image works if it contains both R and `rserver`.
+Any other image works if it contains both R and `rserver`, but may lack the
+system libraries above.
 
 ## Launch
 
@@ -33,8 +50,8 @@ HTCF, so no `-B` flags are needed for them.
 ```bash
 mkdir -p logs
 sbatch rstudio_apptainer.sbatch \
-    /ref/mblab/containers/chasem/rstudio_4.6.1.sif \
-    /ref/mblab/software/chasem/R/rstudio_4.6.1
+    /ref/mblab/containers/chasem/rstudio_bioc_4.6.1.sif \
+    /ref/mblab/software/chasem/R-rstudio
 ```
 
 Override resources at submission if needed:
@@ -59,7 +76,9 @@ respond after the log message appears.
 ## Persistent library
 
 The sbatch script writes a small R profile into the job's temp directory and
-points `R_PROFILE_USER` at it, so every R session that server starts runs:
+starts `rserver` with a wrapper that sets `R_PROFILE_USER` to it (rserver
+does not pass its own environment to R sessions, so exporting the variable in
+the job script is not enough). Every R session the server starts runs:
 
 ```r
 local({
@@ -84,14 +103,15 @@ Notes:
 - **Do not share a library directory between different images or hosts, even
   at the same R version.** Compiled packages link against system libraries
   (e.g. `libuv`) that exist only where they were built. A package built
-  elsewhere can fail to load in the container with an error like
+  elsewhere, or against a different image, can fail to load with an error like
   `unable to load shared object '.../fs/libs/fs.so': libuv.so.1: cannot open
-  shared object file`. Use a separate base directory per image (as in the
-  launch example above), or reinstall the package from inside the container.
+  shared object file`. Use a separate base directory per image, and a new one
+  when you switch to a rebuilt image.
 - Each R major.minor version gets its own subdirectory (`.../R/4.6`), so
   upgrading the image does not mix libraries.
 - Installing from source needs compilers. If a package fails to build, the
-  image is likely missing them; add them to the image or install a binary.
+  image is likely missing a system library; add it to the `Dockerfile` and
+  rebuild.
 - If installs fail with "not writable", check that you can `touch` a file in
   the directory from inside the container.
 
