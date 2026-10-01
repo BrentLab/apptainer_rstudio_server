@@ -45,8 +45,10 @@ if [ ! -d "$libbase" ]; then
 fi
 
 # ------ Find rserver and R inside the image ------
+# rserver is resolved to its real path: rsession lives next to it, but not next
+# to a symlink (e.g. /usr/local/bin/rserver in rocker images).
 rserver=$(apptainer exec "$sif" bash -c \
-    'command -v rserver || ls /usr/lib/rstudio-server/bin/rserver' 2>/dev/null || true)
+    'readlink -f "$(command -v rserver)" || ls /usr/lib/rstudio-server/bin/rserver' 2>/dev/null || true)
 if [ -z "$rserver" ]; then
     echo "Error: rserver not found in $sif -- this image cannot run RStudio Server" >&2
     exit 1
