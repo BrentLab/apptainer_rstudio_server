@@ -108,6 +108,17 @@ Notes:
 - If installs fail with "not writable", check that you can `touch` a file in
   the directory from inside the container.
 
+## Sessions are not kept between jobs
+
+RStudio normally stores session state (the running or suspended R session,
+history, open editor tabs) in `~/.local/share/rstudio`, and a new job would
+resume it, including its old `.libPaths()`. The script instead sets
+`RSTUDIO_DATA_HOME` to a per-job temp directory that is deleted when the job
+ends, so every launch starts a fresh session. Save anything you want to keep
+(scripts, data) to a real directory; unsaved editor tabs, history and the R
+workspace do not survive a relaunch. RStudio preferences (`~/.config/rstudio`)
+are unaffected.
+
 ## Security note
 
 `rserver` is started without authentication and listens on the compute node,

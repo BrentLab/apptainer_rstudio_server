@@ -62,8 +62,14 @@ unset R_LIBS R_LIBS_USER R_LIBS_SITE XDG_RUNTIME_DIR
 port=$(shuf -i9000-9999 -n1)
 host=$(hostname)
 RSTUDIO_TMP=/tmp/rstudio-$USER-$SLURM_JOBID
-mkdir -p "$RSTUDIO_TMP"/{data,db,run,var-lib}
+mkdir -p "$RSTUDIO_TMP"/{data,db,run,var-lib,rstudio-data}
 trap 'rm -rf "$RSTUDIO_TMP"' EXIT
+
+# Keep RStudio's per-user state (session metadata, suspended R state, history,
+# open tabs) in the per-job directory instead of ~/.local/share/rstudio, so a
+# new job never resumes a previous job's session. (Preferences stay in
+# ~/.config/rstudio.)
+export RSTUDIO_DATA_HOME="$RSTUDIO_TMP/rstudio-data"
 
 cat > "$RSTUDIO_TMP/rstudio-database.conf" <<DBCONF
 provider=sqlite
@@ -83,6 +89,7 @@ mkdir -p "$libdir"
 # choose the rsession command, so this wrapper adds the flag.
 cat > "$RSTUDIO_TMP/rsession.sh" <<RSESSION
 #!/bin/bash
+export RSTUDIO_DATA_HOME="$RSTUDIO_TMP/rstudio-data"
 exec "$(dirname "$rserver")/rsession" --r-libs-user "$libdir" "\$@"
 RSESSION
 chmod +x "$RSTUDIO_TMP/rsession.sh"
