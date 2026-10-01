@@ -15,7 +15,7 @@
 # $1  path to the .sif image. It must contain both R and rserver.
 # $2  base directory for persistent R libraries (must already exist and be
 #     writable). A subdirectory per R major.minor version (e.g. 4.6) is
-#     created inside it and set as R_LIBS for the RStudio sessions, so
+#     created inside it and passed to rsession as --r-libs-user, so
 #     it is first on .libPaths() and nothing needs to be added to $HOME.
 #
 # /scratch, /lts, /home and /ref are mounted into containers on the HTCF,
@@ -73,18 +73,17 @@ DBCONF
 # Per-version library directory. R ignores a library path that does not exist,
 # so create it now.
 rver=$(apptainer exec "$sif" Rscript -e 'cat(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")')
-libdir="$libbase/$rver"
+libdir="${libbase%/}/$rver"
 mkdir -p "$libdir"
 
-# rserver launches rsession with a cleaned environment, so variables exported
-# here would not reach R. This wrapper sets R_LIBS and then runs the real
-# rsession. R_LIBS (not R_LIBS_USER) is used because rocker images set R_LIBS to
-# the read-only system library in Renviron.site unless it is already set, and
-# R_LIBS_USER would sort after it.
+# rsession discards R_LIBS, R_LIBS_USER and R_PROFILE_USER from its environment
+# (and rserver does not pass its own environment on), so the library cannot be
+# set by exporting variables. rsession has its own --r-libs-user option;
+# RStudio puts that directory first on .libPaths(). rserver only lets us
+# choose the rsession command, so this wrapper adds the flag.
 cat > "$RSTUDIO_TMP/rsession.sh" <<RSESSION
 #!/bin/bash
-export R_LIBS="$libdir"
-exec "$(dirname "$rserver")/rsession" "\$@"
+exec "$(dirname "$rserver")/rsession" --r-libs-user "$libdir" "\$@"
 RSESSION
 chmod +x "$RSTUDIO_TMP/rsession.sh"
 

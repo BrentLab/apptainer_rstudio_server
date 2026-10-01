@@ -77,13 +77,14 @@ respond after the log message appears.
 
 The sbatch script works out the image's R version (e.g. `4.6`), creates
 `<lib_base_dir>/4.6`, and starts `rserver` with a small `rsession` wrapper
-that exports `R_LIBS=<lib_base_dir>/4.6` before running the real `rsession`.
-(rserver does not pass its own environment to R sessions, so exporting the
-variable in the job script is not enough.) `R_LIBS` is used rather than
-`R_LIBS_USER` because rocker images set `R_LIBS` to the read-only system
-library, which would otherwise stay first. Nothing is added to `$HOME`, so
-other R runs are unaffected. Check with `.libPaths()`: your directory should
-be listed first, followed by the image's own libraries.
+that passes `--r-libs-user <lib_base_dir>/4.6` to the real `rsession`.
+
+This is done with an `rsession` option rather than environment variables
+because `rsession` discards `R_LIBS`, `R_LIBS_USER` and `R_PROFILE_USER`
+from the environment it is started with, so exporting them in the job script
+(or in the wrapper) has no effect. Nothing is added to `$HOME`, so other R
+runs are unaffected. Check with `.libPaths()`: your directory should be
+listed first, followed by the image's own libraries.
 
 Because the path is first, `install.packages()` and `BiocManager::install()`
 write there, and packages already in it are found first. The image's own
