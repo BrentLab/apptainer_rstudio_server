@@ -15,8 +15,8 @@
 # $1  path to the .sif image. It must contain both R and rserver.
 # $2  base directory for persistent R libraries (must already exist and be
 #     writable). A subdirectory per R major.minor version (e.g. 4.6) is
-#     created inside it and put first on .libPaths() via a per-job
-#     R_PROFILE_USER file, so nothing needs to be added to $HOME.
+#     created inside it and set as R_LIBS for the RStudio sessions, so
+#     it is first on .libPaths() and nothing needs to be added to $HOME.
 #
 # /scratch, /lts, /home and /ref are mounted into containers on the HTCF,
 # so the lib base dir is visible inside the container at the same path.
@@ -70,28 +70,27 @@ provider=sqlite
 directory=$RSTUDIO_TMP/db
 DBCONF
 
-# R profile run by every R session this server starts. rserver launches
-# rsession with a cleaned environment, so R_PROFILE_USER cannot just be exported
-# here; it is set in the rsession wrapper below instead.
-# Replaces ~/.Rprofile for these sessions only; other R runs are unaffected.
-cat > "$RSTUDIO_TMP/Rprofile" <<RPROFILE
-local({
-  v   <- paste(R.version\$major, sub("\\\\..*", "", R.version\$minor), sep = ".")
-  lib <- file.path("$libbase", v)
-  # .libPaths() silently drops directories that do not exist
-  if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)
-  .libPaths(c(lib, .libPaths()))
-})
-RPROFILE
+# Per-version library directory. R ignores a library path that does not exist,
+# so create it now.
+rver=$(apptainer exec "$sif" Rscript -e 'cat(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")')
+libdir="$libbase/$rver"
+mkdir -p "$libdir"
 
+# rserver launches rsession with a cleaned environment, so variables exported
+# here would not reach R. This wrapper sets R_LIBS and then runs the real
+# rsession. R_LIBS (not R_LIBS_USER) is used because rocker images set R_LIBS to
+# the read-only system library in Renviron.site unless it is already set, and
+# R_LIBS_USER would sort after it.
 cat > "$RSTUDIO_TMP/rsession.sh" <<RSESSION
 #!/bin/bash
-export R_PROFILE_USER="$RSTUDIO_TMP/Rprofile"
+export R_LIBS="$libdir"
 exec "$(dirname "$rserver")/rsession" "\$@"
 RSESSION
 chmod +x "$RSTUDIO_TMP/rsession.sh"
 
 echo -e "
+R library for this session: $libdir
+
 In a local terminal, create an SSH tunnel to $host
 -----------------------------------------------------------------
 ssh $USER@login.htcf.wustl.edu -N -L $port:$host:$port

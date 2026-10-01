@@ -75,23 +75,15 @@ respond after the log message appears.
 
 ## Persistent library
 
-The sbatch script writes a small R profile into the job's temp directory and
-starts `rserver` with a wrapper that sets `R_PROFILE_USER` to it (rserver
-does not pass its own environment to R sessions, so exporting the variable in
-the job script is not enough). Every R session the server starts runs:
-
-```r
-local({
-  v   <- paste(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")  # "4.6"
-  lib <- file.path("<lib_base_dir>", v)
-  if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)  # .libPaths() silently drops missing dirs
-  .libPaths(c(lib, .libPaths()))
-})
-```
-
-Nothing is added to `$HOME`, so other R runs are unaffected. (For the same
-reason, `~/.Rprofile` is not read in these sessions.) Check with
-`.libPaths()`: your directory should be listed first.
+The sbatch script works out the image's R version (e.g. `4.6`), creates
+`<lib_base_dir>/4.6`, and starts `rserver` with a small `rsession` wrapper
+that exports `R_LIBS=<lib_base_dir>/4.6` before running the real `rsession`.
+(rserver does not pass its own environment to R sessions, so exporting the
+variable in the job script is not enough.) `R_LIBS` is used rather than
+`R_LIBS_USER` because rocker images set `R_LIBS` to the read-only system
+library, which would otherwise stay first. Nothing is added to `$HOME`, so
+other R runs are unaffected. Check with `.libPaths()`: your directory should
+be listed first, followed by the image's own libraries.
 
 Because the path is first, `install.packages()` and `BiocManager::install()`
 write there, and packages already in it are found first. The image's own
