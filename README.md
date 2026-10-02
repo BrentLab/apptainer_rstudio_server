@@ -1,10 +1,21 @@
 # Run RStudio Server on the HTCF with Spack
 
-This repo runs RStudio Server on the HTCF from a Spack environment, as you, in
-a Slurm job. The environment provides RStudio Server, R, and the system
+This repo runs RStudio Server on the HTCF from a Spack environment in a slurm 
+job. The environment provides RStudio Server, R, and the system
 libraries (headers and shared libraries) that R packages need to build from
 source. Because it runs on the host, Slurm commands such as `sbatch` and
-`squeue` are available in the RStudio terminal.
+`squeue` are available in the RStudio terminal, which means you can use 
+packages like [targets](https://books.ropensci.org/targets/),
+[crew.cluster](https://wlandau.github.io/crew.cluster/) and
+[future.batchtools](future.batchtools.futureverse.org) that
+submit jobs to Slurm, and easily monitor and ingest the results.
+
+Using those tools help, because for jobs that require more resources,
+it makes it easy to submit it to the cluster. Those resources will 
+be used for that job, and then exited. However, rstudio still does 
+run on in the interactive node (or it should. that is how the sbatch 
+script is set up). If you aren't actively using rstudio, exit the 
+session and free up those resources for someone else.
 
 There are three parts:
 
@@ -147,10 +158,11 @@ for the exact argument.
 
 ## Limitations
 
-- **Packages go into a shared R library.** The environment does not set up a
-  per-user library. `install.packages()` and `BiocManager::install()` write
-  into the library of the Spack R install, for example
-  `/ref/mblab/software/spack-1.1.0/opt/spack/linux-x86_64/r-4.6.1-<hash>/rlib/R/library`.
+- **Packages go into the spack R library, which may be shared.** If you are
+  using a spack location that is shared by more than one user, the
+  environment does not set up a per-user library. `install.packages()`
+  and `BiocManager::install()` write into the library of the Spack R
+  install, for example `/ref/mblab/software/spack-1.1.0/opt/spack/linux-x86_64/r-4.6.1-<hash>/rlib/R/library`.
   Anyone using that same R install shares those packages: what you install is
   visible to them, and a newer version installed by someone else changes what
   you get. The packages are also lost if that R is uninstalled or reinstalled.
@@ -164,22 +176,10 @@ for the exact argument.
   from where they were built. Do not share a package library between this
   environment and a different R or a different host, even at the same R
   version.
-- **Do not copy or move an installed environment.** Its `view` is a symlink
-  with an absolute path, so a copied or moved directory still points at the
-  old location. To relocate one, repoint the link
-  (`ln -sfn <new>/._view/<hash> <new>/view`) or rebuild the view with
-  `spack -e <new> env view regenerate`; or copy only `spack.yaml` and
-  `spack.lock` and run `spack -e <new> install`.
 - **Rocky 8 versus Rocky 9.** The environment is built for the OS it was
   installed on. Install it on, and run it on, the same OS release.
 - **Bioconductor.** `BiocManager::install()` builds from source and uses the
   environment's libraries; add any missing system library to `spack.yaml`.
-
-## Security note
-
-`rserver` is started without authentication and listens on the compute node.
-Anyone who can reach that node's port can open a session as you. Keep sessions
-short and cancel the job (`scancel <jobid>`) when you are done.
 
 ## Credit
 
