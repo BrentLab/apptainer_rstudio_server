@@ -1,126 +1,185 @@
-# Run RStudio Server on the HTCF with Apptainer
+# Run RStudio Server on the HTCF with Spack
 
-RStudio Server on the HTCF needs two things sorted out: the compiled software
-R relies on, and where R puts installed packages. A container handles the
-first. A persistent library directory, bound in from the cluster filesystem,
-handles the second: packages you install in one session are still there the
-next time.
+This repo runs RStudio Server on the HTCF from a Spack environment in a slurm 
+job. The environment provides RStudio Server, R, and the system
+libraries (headers and shared libraries) that R packages need to build from
+source. Because it runs on the host, Slurm commands such as `sbatch` and
+`squeue` are available in the RStudio terminal, which means you can use 
+packages like [targets](https://books.ropensci.org/targets/),
+[crew.cluster](https://wlandau.github.io/crew.cluster/) and
+[future.batchtools](future.batchtools.futureverse.org) that
+submit jobs to Slurm, and easily monitor and ingest the results.
 
-The `Dockerfile` in this repo builds on `rocker/rstudio:4.6.1` and adds the
-system libraries needed to run and compile CRAN and Bioconductor packages
-(libuv, libcurl, libxml2, hdf5, graphics and font libraries, GDAL/GEOS/PROj,
-and more). No R packages are baked in; they live in the persistent library.
+Using those tools help, because for jobs that require more resources,
+it makes it easy to submit it to the cluster. Those resources will 
+be used for that job, and then exited. However, rstudio still does 
+run on in the interactive node (or it should. that is how the sbatch 
+script is set up). If you aren't actively using rstudio, exit the 
+session and free up those resources for someone else.
 
-The stock `rocker/rstudio` image is minimal. R installs precompiled binaries
-from Posit Package Manager, and those need matching system libraries at run
-time. Without them, packages fail to load, e.g. `fs`:
-`libuv.so.1: cannot open shared object file`.
+There are three parts:
 
-## Build the image
+1. [Create the Spack environment](#1-create-the-spack-environment) (once).
+2. [Launch an interactive RStudio session](#2-launch-an-interactive-rstudio-session).
+3. [Use the environment in batch jobs](#3-use-the-environment-in-batch-jobs)
+   that call `Rscript`.
 
-On a machine with Docker:
+Read [Limitations](#limitations) before installing packages.
 
-```bash
-docker build -t <dockerhub username>/rstudio-bioc:4.6.1 .
-docker push <dockerhub username>/rstudio-bioc:4.6.1
-```
+## 1. Create the Spack environment
 
-## Get the image on the cluster
-
-```bash
-apptainer pull rstudio_bioc_4.6.1.sif docker://<dockerhub username>/rstudio-bioc:4.6.1
-```
-
-Put the `.sif` somewhere shared, e.g. under `/ref/` or `/lts/`.
-
-To confirm the image has what the sbatch script needs:
+**Register the recipe repo.** The `rstudio-server` package recipe is in
+`spack/spack_repo/brentlab`:
 
 ```bash
-apptainer exec rstudio_bioc_4.6.1.sif bash -c 'R --version | head -1; command -v rserver || ls /usr/lib/rstudio-server/bin/rserver; ldconfig -p | grep libuv'
+spack repo add /path/to/spack/spack_repo/brentlab
 ```
 
-Any other image works if it contains both R and `rserver`, but may lack the
-system libraries above.
+If `spack repo add` complains that the `repos` section is in a deprecated
+format, update it with `spack config --scope <scope> update repos` (find the
+scope with `spack config blame repos`). Older Spack versions cannot read the
+updated file, so check before changing a config that is shared.
 
-## Launch
+**Copy the environment to a stable location.** The environment is
+`spack/env/spack.yaml`. Installing creates a `view/` directory inside the
+environment directory that holds links to everything, and jobs use it, so put
+the environment somewhere that will not be cleaned up (not a purged scratch
+directory):
 
-`/scratch`, `/lts`, `/home` and `/ref` are mounted into containers on the
-HTCF, so no `-B` flags are needed for them.
+```bash
+cp -r spack/env /ref/mblab/software/<you>/rstudio-env
+```
+
+**Install it.** Do this on a node running the OS you will run jobs on (see
+the notes on the package below). Concretizing first checks the specs; the
+install builds the libraries from source and is slow, so run it in a job or a
+`tmux` session with a long time limit. In one install, building `cmake` alone
+took about 35 minutes:
+
+```bash
+spack -e /ref/mblab/software/<you>/rstudio-env concretize -f
+spack -e /ref/mblab/software/<you>/rstudio-env install
+```
+
+To change what is in the environment, edit its `spack.yaml` and install
+again:
+
+- **R version:** change the `r@4.6.1` line.
+- **More libraries:** add specs. The spatial and HDF5 libraries (`hdf5`,
+  `netcdf-c`, `gdal`, `geos`, `proj`) are commented out because they take a
+  long time to build; uncomment them if you need `sf`, `terra`, `hdf5r` and so
+  on.
+
+Keep one environment directory per R version if you need more than one.
+
+Notes on the `rstudio-server` package:
+
+- It installs RStudio Server from Posit's prebuilt RPM (nothing is compiled)
+  and unpacks it with `bsdtar` (a build dependency, `libarchive`).
+- The EL8 and EL9 RPMs are different builds, so the package picks the one that
+  matches the OS Spack is running on (`...-el8` or `...-el9`). The HTCF login
+  node and the compute nodes can run different OS releases, so install on a
+  node of the OS you will run on.
+- It depends on R at run time, and the R version is part of the install.
+- It is about 740 MB installed. The GitHub Copilot language server (about
+  800 MB more) is left out unless you install with `+copilot`.
+- Spack stages the RPM (about 400 MB) and unpacks it (about 1.6 GB) while
+  installing. If the default staging location is too small, set
+  `config:build_stage` to a directory on `/scratch`.
+
+## 2. Launch an interactive RStudio session
 
 ```bash
 mkdir -p logs
-sbatch rstudio_apptainer.sbatch \
-    /ref/mblab/containers/chasem/rstudio_bioc_4.6.1.sif \
-    /ref/mblab/software/chasem/R-rstudio
+sbatch rstudio_spack.sbatch /ref/mblab/software/<you>/rstudio-env
 ```
 
-Override resources at submission if needed:
+The argument is the environment directory. If you leave it out, the script
+uses `spack/env` under the directory you submit from. Override resources at
+submission if needed:
 
 ```bash
-sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_apptainer.sbatch <sif> <lib_base_dir>
+sbatch --cpus-per-task=8 --mem=32G --time=08:00:00 rstudio_spack.sbatch <env_dir>
 ```
 
-Arguments:
+The `spack` command must be on your `PATH` when you submit. The script
+activates the environment for the job and puts its libraries on the compiler
+and loader paths, so packages installed from source in the RStudio session
+find the environment's headers and libraries.
 
-- `$1` path to the `.sif` image
-- `$2` base directory for persistent R libraries (must already exist, and be
-  writable by you). A per-R-version subdirectory is created inside it.
+**Connect.** Once the job starts, `logs/rstudio_<jobid>.out` contains an SSH
+tunnel command and a `localhost` URL. Run the `ssh ... -N -L ...` command in a
+terminal on your own machine, then open the URL. The server can take a short
+while to respond after the log message appears.
 
-## Connect
+**Sessions are not kept between jobs.** RStudio normally stores session state
+(the running or suspended R session, history, open editor tabs) in
+`~/.local/share/rstudio`, and a new job would resume it. The script instead
+sets `RSTUDIO_DATA_HOME` to a per-job temp directory that is deleted when the
+job ends, so every launch starts a fresh session. Save anything you want to
+keep (scripts, data) to a real directory; unsaved editor tabs, history and
+the R workspace do not survive a relaunch. RStudio preferences
+(`~/.config/rstudio`) are unaffected.
 
-Once the job starts, `logs/rstudio_<jobid>.out` contains an SSH tunnel command
-and a `localhost` URL. Run the `ssh ... -N -L ...` command in a terminal on
-your own machine, then open the URL. The server can take a short while to
-respond after the log message appears.
+## 3. Use the environment in batch jobs
 
-## Persistent library
+Packages you installed from RStudio are in the Spack R's library and the
+compiled ones link against libraries in the environment. A batch job that
+calls `Rscript` therefore has to activate the environment and put its
+libraries on `LD_LIBRARY_PATH`, the same as the launcher does:
 
-The sbatch script writes a small R profile into the job's temp directory and
-starts `rserver` with a wrapper that sets `R_PROFILE_USER` to it (rserver
-does not pass its own environment to R sessions, so exporting the variable in
-the job script is not enough). Every R session the server starts runs:
+```bash
+#!/bin/bash
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
 
-```r
-local({
-  v   <- paste(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")  # "4.6"
-  lib <- file.path("<lib_base_dir>", v)
-  if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)  # .libPaths() silently drops missing dirs
-  .libPaths(c(lib, .libPaths()))
-})
+env=/ref/mblab/software/<you>/rstudio-env
+
+eval "$(spack env activate --sh "$env")"
+export LD_LIBRARY_PATH="$env/view/lib:$env/view/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+Rscript my_script.R
 ```
 
-Nothing is added to `$HOME`, so other R runs are unaffected. (For the same
-reason, `~/.Rprofile` is not read in these sessions.) Check with
-`.libPaths()`: your directory should be listed first.
+Why `LD_LIBRARY_PATH` is needed: compiled R packages carry no link to the
+environment's libraries, so without it a package such as `curl` can fail to
+load (`libcurl.so.4: cannot open shared object file`) or pick up a different
+system library. Activating the environment alone sets `PATH` and
+`PKG_CONFIG_PATH`, but not this.
 
-Because the path is first, `install.packages()` and `BiocManager::install()`
-write there, and packages already in it are found first. The image's own
-packages stay available as a fallback. Use the same base directory every
-session and nothing needs reinstalling.
+If you only need R and pure-R packages (nothing compiled against the
+environment's libraries), `eval "$(spack load --sh r@4.6.1)"` is enough, but
+the environment is the safe choice.
 
-Notes:
+For workers started by `crew.cluster` (or any tool that submits its own Slurm
+jobs), add the same lines to the worker's job script. In `crew.cluster` that is
+the `script_lines` option of `crew_options_slurm()`; check its documentation
+for the exact argument.
 
-- **Do not share a library directory between different images or hosts, even
-  at the same R version.** Compiled packages link against system libraries
-  (e.g. `libuv`) that exist only where they were built. A package built
-  elsewhere, or against a different image, can fail to load with an error like
-  `unable to load shared object '.../fs/libs/fs.so': libuv.so.1: cannot open
-  shared object file`. Use a separate base directory per image, and a new one
-  when you switch to a rebuilt image.
-- Each R major.minor version gets its own subdirectory (`.../R/4.6`), so
-  upgrading the image does not mix libraries.
-- Installing from source needs compilers. If a package fails to build, the
-  image is likely missing a system library; add it to the `Dockerfile` and
-  rebuild.
-- If installs fail with "not writable", check that you can `touch` a file in
-  the directory from inside the container.
+## Limitations
 
-## Security note
-
-`rserver` is started without authentication and listens on the compute node,
-as in the original version of this repo. Anyone who can reach that node's
-port can open a session as you. Keep sessions short and cancel the job
-(`scancel <jobid>`) when you are done.
+- **Packages go into the spack R library, which may be shared.** If you are
+  using a spack location that is shared by more than one user, the
+  environment does not set up a per-user library. `install.packages()`
+  and `BiocManager::install()` write into the library of the Spack R
+  install, for example `/ref/mblab/software/spack-1.1.0/opt/spack/linux-x86_64/r-4.6.1-<hash>/rlib/R/library`.
+  Anyone using that same R install shares those packages: what you install is
+  visible to them, and a newer version installed by someone else changes what
+  you get. The packages are also lost if that R is uninstalled or reinstalled.
+  If you want your own library, set it yourself with
+  `.libPaths(c("/path/to/my/library", .libPaths()))` at the start of each
+  session (the directory must already exist). This repo does not configure it.
+- **You must use the environment to use the packages.** Packages built from
+  RStudio depend on the environment's libraries, so batch jobs need the
+  environment activated as in [section 3](#3-use-the-environment-in-batch-jobs).
+- **Do not mix library builds.** Compiled packages link against libraries
+  from where they were built. Do not share a package library between this
+  environment and a different R or a different host, even at the same R
+  version.
+- **Rocky 8 versus Rocky 9.** The environment is built for the OS it was
+  installed on. Install it on, and run it on, the same OS release.
+- **Bioconductor.** `BiocManager::install()` builds from source and uses the
+  environment's libraries; add any missing system library to `spack.yaml`.
 
 ## Credit
 
