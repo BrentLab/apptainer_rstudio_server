@@ -6,3 +6,4 @@
 session.txt
 spack/env/view/
 spack/env/.spack-env/
+__pycache__/
