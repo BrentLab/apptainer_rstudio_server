@@ -1,0 +1,69 @@
+# Spack environment for running RStudio Server and building R packages from
+# source on the HTCF. It provides RStudio Server, R, and the system libraries
+# (headers, pkg-config files, shared libraries) that CRAN and Bioconductor
+# packages commonly need. rstudio_spack.sbatch activates it for the job.
+#
+# Install (needs the brentlab repo registered: spack repo add ...):
+#   spack -e <this directory> install
+#
+# To change the R version, edit the r@ line below and reinstall.
+spack:
+  specs:
+  - rstudio-server
+  - r@4.6.1
+
+  # Libraries for building R packages from source
+  # network, crypto, XML, git
+  - curl
+  - openssl
+  - libxml2
+  - libxslt
+  - libssh2
+  - libgit2
+  - libuv
+  - libsodium
+  - libzmq
+  - sqlite
+  # compression, text, regex
+  - bzip2
+  - xz
+  - zstd
+  - pcre2
+  - icu4c
+  # graphics, fonts, images (ragg, systemfonts, textshaping, Cairo, ...)
+  - freetype
+  - fontconfig
+  - harfbuzz
+  - fribidi
+  - libpng
+  - libjpeg-turbo
+  - libtiff
+  - libwebp+libwebpmux
+  - cairo
+  # math and statistics
+  - gsl
+  - glpk
+  - gmp
+  - mpfr
+  - fftw
+  - nlopt
+  - udunits
+  # build tools
+  - cmake
+  - pkgconf
+  - git
+
+  # Spatial and HDF5 libraries. These take a long time to build, so they are
+  # off by default. Uncomment what you need (sf, terra, hdf5r, ncdf4, ...).
+  # - hdf5
+  # - netcdf-c
+  # - gdal
+  # - geos
+  # - proj
+
+  # Everything is linked into one prefix (include/, lib/, lib/pkgconfig) that
+  # rstudio_spack.sbatch puts on the compiler and loader paths.
+  view: view
+
+  concretizer:
+    unify: true

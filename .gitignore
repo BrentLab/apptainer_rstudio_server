@@ -3,3 +3,6 @@
 .Rdata
 .httr-oauth
 .DS_Store
+session.txt
+spack/env/view/
+spack/env/.spack-env/

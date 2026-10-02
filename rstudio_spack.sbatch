@@ -7,27 +7,31 @@
 #SBATCH --mem=16G
 #SBATCH --time=12:00:00
 
-# Launch RStudio Server from the Spack package (spack/ in this repo) on the HTCF.
+# Launch RStudio Server from a Spack environment on the HTCF.
 #
-# usage (from a directory that contains a logs/ subdirectory):
-#   sbatch rstudio_spack.sbatch <lib_base_dir> [r_spec]
+# usage (from the repo directory, which must contain a logs/ subdirectory):
+#   sbatch rstudio_spack.sbatch [spack_env_dir]
 #
-# $1  base directory for persistent R libraries (must already exist and be
-#     writable). A subdirectory per R major.minor version (e.g. 4.6) is
-#     created inside it and put first on .libPaths(), so nothing needs to be
-#     added to $HOME.
-# $2  optional Spack spec for R (default: r). The R version is part of the
-#     rstudio-server install, so if more than one R is installed you may have
-#     to say which one to use, e.g. r@4.6.1. rstudio-server must have been
-#     installed with that R:  spack install rstudio-server ^r@4.6.1
+# $1  optional Spack environment directory (default: spack/env under the
+#     directory you submit from). It must already be installed:
+#       spack -e <spack_env_dir> install
+#     The R version comes from the environment: edit the r@ line in its
+#     spack.yaml (e.g. r@4.6.1) and reinstall to change it, or keep one
+#     environment per R version and pass the one you want here.
+#
+# The environment's view puts RStudio Server, R and the system libraries for
+# building R packages (headers, pkg-config files, shared libraries) on PATH,
+# the compiler paths and LD_LIBRARY_PATH for R sessions.
+#
+# Packages installed from RStudio go into the R library of the Spack R install,
+# which is shared by everyone using that install. See the README.
 #
 # The 'spack' command must be on PATH.
 
 set -euo pipefail
 
-usage="usage: sbatch rstudio_spack.sbatch <lib_base_dir> [r_spec, e.g. r@4.6.1]"
-libbase=${1:?$usage}
-rspec=${2:-r}
+envdir=${1:-${SLURM_SUBMIT_DIR:-$PWD}/spack/env}
+view="$envdir/view"
 
 # ------ Sanity checks ------
 if [ -z "${SLURM_JOBID:-}" ]; then
@@ -38,15 +42,25 @@ if ! command -v spack >/dev/null 2>&1; then
     echo "Error: spack not found on PATH" >&2
     exit 1
 fi
-if [ ! -d "$libbase" ]; then
-    echo "Error: lib base dir does not exist: $libbase (mkdir it first)" >&2
+if [ ! -f "$envdir/spack.yaml" ]; then
+    echo "Error: no spack.yaml in spack env dir: $envdir" >&2
+    exit 1
+fi
+if [ ! -d "$view" ]; then
+    echo "Error: $view not found; install the environment first: spack -e $envdir install" >&2
     exit 1
 fi
 
-# ------ Load RStudio Server and R ------
-eval "$(spack load --sh rstudio-server ^"$rspec")"
+# ------ Activate the Spack environment ------
+eval "$(spack env activate --sh "$envdir")"
+# Make the view's headers and libraries visible to compilers and the loader, so
+# R packages built from source find them and can load them. spack env activate
+# sets PATH, PKG_CONFIG_PATH and CMAKE_PREFIX_PATH but not these.
+export CPATH="$view/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$view/lib:$view/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$view/lib:$view/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if ! command -v rserver >/dev/null 2>&1 || ! command -v R >/dev/null 2>&1; then
-    echo "Error: rserver and R not both found after: spack load rstudio-server ^$rspec" >&2
+    echo "Error: rserver and R not both found after activating $envdir" >&2
     exit 1
 fi
 # rsession lives next to the real rserver, not next to the symlink in bin/
@@ -74,26 +88,24 @@ provider=sqlite
 directory=$RSTUDIO_TMP/db
 DBCONF
 
-# Per-version library directory. R ignores a library path that does not exist,
-# so create it now.
-rver=$(Rscript -e 'cat(R.version$major, sub("\\..*", "", R.version$minor), sep = ".")')
-libdir="${libbase%/}/$rver"
-mkdir -p "$libdir"
-
-# rsession discards R_LIBS, R_LIBS_USER and R_PROFILE_USER from its environment
-# (and rserver does not pass its own environment on), so the library cannot be
-# set by exporting variables. rsession has its own --r-libs-user option;
-# RStudio puts that directory first on .libPaths(). rserver only lets us
-# choose the rsession command, so this wrapper adds the flag.
+# rserver only lets us choose the rsession command, so this wrapper passes on
+# the environment's paths. R sessions can then build and load packages that
+# need the environment's libraries.
 cat > "$RSTUDIO_TMP/rsession.sh" <<RSESSION
 #!/bin/bash
 export RSTUDIO_DATA_HOME="$RSTUDIO_TMP/rstudio-data"
-exec "$(dirname "$rserver")/rsession" --r-libs-user "$libdir" "\$@"
+export PATH="$PATH"
+export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}"
+export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}"
+export CPATH="$CPATH"
+export LIBRARY_PATH="$LIBRARY_PATH"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+exec "$(dirname "$rserver")/rsession" "\$@"
 RSESSION
 chmod +x "$RSTUDIO_TMP/rsession.sh"
 
 echo -e "
-R library for this session: $libdir
+Spack environment: $envdir
 
 In a local terminal, create an SSH tunnel to $host
 -----------------------------------------------------------------
@@ -114,5 +126,6 @@ It can take a moment after this message before the server responds.
     --server-pid-file "$RSTUDIO_TMP/rstudio.pid" \
     --database-config-file "$RSTUDIO_TMP/rstudio-database.conf" \
     --rsession-path "$RSTUDIO_TMP/rsession.sh" \
+    --rsession-ld-library-path "$view/lib:$view/lib64" \
     --rsession-which-r "$rbin" \
     --server-user "$USER"
